@@ -4,16 +4,17 @@ from time import sleep
 from gpiozero.pins.mock import MockFactory
 from gpiozero import Device, Button
 from pins import Pins
+import os
+from cash_register_constants import CashRegisterCommand, CashRegisterStatus
 
 # Set the default pin factory to a mock factory
-Device.pin_factory = MockFactory()
+if os.environ.get('TESTING_ENVIRONMENT', None):
+    Device.pin_factory = MockFactory()
 
 COMMAND_LOCK = Lock()
 
 
 class CashState:
-    CASH_MQ_LOCK = Lock()
-    cash_mq = ipc.MessageQueue('/ft_cash_register', ipc.O_CREAT)
     BALANCE_LOCK = Lock()
     balance = 0
     required_amount = 0
@@ -21,33 +22,30 @@ class CashState:
 
 
 class CashController(Thread):
+    cash_mq = ipc.MessageQueue('/ft_cash_register', ipc.O_CREAT)
     cmd_mq = ipc.MessageQueue('/ft_cash_controller', ipc.O_CREAT)
 
     def __init__(self):
         def handler():
             while True:
-                cmd, prio = self.cmd_mq.receive(timeout=0.1 if CashState.accept_cash else None)
+                cmd, prio = CashController.cmd_mq.receive(timeout=0.1 if CashState.accept_cash else None)
                 if cmd:
-                    if cmd.startswith("ACCEPT CASH "):
-                        self.accept_cash(amount=int(cmd["ACCEPT CASH ":]))
-                        with CashState.CASH_MQ_LOCK:
-                            CashState.cash_mq.send("ACCEPTING CASH")
-                    if cmd.startswith("DENY CASH"):
+                    if cmd.startswith(CashRegisterCommand.ACCEPT_CASH):
+                        self.accept_cash(amount=int(cmd.split(', ')[1]))
+                        CashController.cash_mq.send(CashRegisterStatus.ACCEPTING_CASH)
+                    if cmd.startswith(CashRegisterCommand.DENY_CASH):
                         self.cancel_cash()
-                        with CashState.CASH_MQ_LOCK:
-                            CashState.cash_mq.send("DENYING CASH")
-                    if cmd.startswith("TAKE MONEY"):
+                        CashController.cash_mq.send(CashRegisterStatus.DENYING_CASH)
+                    if cmd.startswith(CashRegisterCommand.TAKE_MONEY):
                         self.take_money()
-                        with CashState.CASH_MQ_LOCK:
-                            CashState.cash_mq.send("PAYMENT COLLECTED")
+                        CashController.cash_mq.send(CashRegisterStatus.PAYMENT_COLLECTED)
                     else:
                         raise RuntimeError(f"Undefined Command {cmd}!")
                 else:
                     with CashState.BALANCE_LOCK:
                         if CashState.balance >= CashState.required_amount:
                             self.deny_cash()
-                    with CashState.CASH_MQ_LOCK:
-                        CashState.cash_mq.send("PAYMENT READY")
+                    CashController.cash_mq.send(CashRegisterStatus.PAYMENT_READY)
 
         super().__init__(target=handler)
 
