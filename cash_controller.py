@@ -20,8 +20,8 @@ class CashState:
 
 
 class CashController(Thread):
-    cash_mq = ipc.MessageQueue(MessageQueueNames.CLIENT_CONTROLLER_RESPONSES, ipc.O_CREAT)
-    cmd_mq = ipc.MessageQueue(MessageQueueNames.CLIENT_CONTROLLER_REQUESTS, ipc.O_CREAT)
+    cash_mq = ipc.MessageQueue(MessageQueueNames.CLIENT_CONTROLLER_RESPONSES.value, ipc.O_CREAT)
+    cmd_mq = ipc.MessageQueue(MessageQueueNames.CLIENT_CONTROLLER_REQUESTS.value, ipc.O_CREAT)
     _instance = None
     cash_input_sem = Semaphore(value=4)
 
