@@ -8,8 +8,8 @@ class Pins(IntEnum):
     RELAY_4 = 13
     RELAY_5 = 6
     RELAY_6 = 5
-    RELAY_7 = 3
-    RELAY_8 = 2
+    RELAY_7 = 21
+    RELAY_8 = 20
 
     MAIN_POWER_RELAY = RELAY_8
     STATUS_LIGHT_RELAY = RELAY_7
