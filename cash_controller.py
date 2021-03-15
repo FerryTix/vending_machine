@@ -129,35 +129,38 @@ class NoteAcceptorRegister(Thread):
     REGISTERING_INPUT = Lock()
     input_relay = OutputDevice(Pins.NOTE_INPUT_RELAY)
     input_relay.off()
+    is_open = False
 
     def __init__(self):
         def handler():
-            input_pin = Button(Pins.NOTE_ACCEPTOR_PULSE_INPUT)
-            while True:
-                input_pin.wait_for_press()
-                with self.REGISTERING_INPUT:
+            input_pin = Button(Pins.NOTE_ACCEPTOR_PULSE_INPUT, hold_time=0.09)
+
+            def when_held_handler():
+                aq = False
+                if self.is_open:
+                    aq = True
+                    CashController.cash_input_sem.acquire()
                     self.close()
-                    with CashState.BALANCE_LOCK:
-                        CashState.balance += 500
+                with CashState.BALANCE_LOCK:
+                    CashState.balance += 500
+                if aq:
                     while True:
-                        sleep(0.01)
-                        # TODO: FIND OUT SUITABLE TIMEOUT
-                        res = input_pin.wait_for_press(timeout=0.100)
-                        print(res)
-                        if res:
-                            with CashState.BALANCE_LOCK:
-                                CashState.balance += 500
-                            continue
-                        break
-                    self.open()
+                        if not input_pin.wait_for_active(timeout=0.06):
+                            CashController.cash_input_sem.release()
+                            self.open()
+                            return
+
+            input_pin.when_held = when_held_handler
 
         super().__init__(target=handler)
 
     def open(self):
         self.input_relay.on()
+        self.is_open = True
 
     def close(self):
         self.input_relay.off()
+        self.is_open = False
 
 
 class CoinAcceptorRegister(Thread):
@@ -178,9 +181,12 @@ class CoinAcceptorRegister(Thread):
                     self.close()
                 with CashState.BALANCE_LOCK:
                     CashState.balance += 10
-                if aq and not input_pin.wait_for_active(timeout=0.2):
-                    CashController.cash_input_sem.release()
-                    self.open()
+                if aq:
+                    while True:
+                        if not input_pin.wait_for_active(timeout=0.2):
+                            CashController.cash_input_sem.release()
+                            self.open()
+                            return
 
             input_pin.when_held = when_held_handler
 
@@ -188,11 +194,11 @@ class CoinAcceptorRegister(Thread):
 
     def open(self):
         self.input_relay.on()
-        self.is_open = False
+        self.is_open = True
 
     def close(self):
         self.input_relay.off()
-        self.is_open = True
+        self.is_open = False
 
 
 if __name__ == '__main__':
