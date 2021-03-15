@@ -121,7 +121,8 @@ class CashController(Thread):
                 self.issue_change(CashState.balance - CashState.required_amount)
 
     def start_all(self):
-        return self.start(), self.note_register.start(), self.coin_register.start()
+        self.start(), self.note_register.start(), self.coin_register.start()
+        return self.note_register, self.coin_register
 
 
 class NoteAcceptorRegister(Thread):
@@ -159,6 +160,8 @@ class NoteAcceptorRegister(Thread):
 
 class CoinAcceptorRegister(Thread):
     REGISTERING_INPUT = Lock()
+    coin_input_relay = OutputDevice(Pins.COIN_INPUT_RELAY)
+    coin_input_relay.on()
 
     def __init__(self):
         def handler():
@@ -188,12 +191,12 @@ class CoinAcceptorRegister(Thread):
         super().__init__(target=handler)
 
     def open(self):
-        pass
+        self.coin_input_relay.off()
 
     def close(self):
-        pass
+        self.coin_input_relay.on()
 
 
 if __name__ == '__main__':
     controller = CashController()
-    ctrl, notes, coins = controller.start_all()
+    notes, coins = controller.start_all()
