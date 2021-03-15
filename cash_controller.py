@@ -127,6 +127,8 @@ class CashController(Thread):
 
 class NoteAcceptorRegister(Thread):
     REGISTERING_INPUT = Lock()
+    input_relay = OutputDevice(Pins.NOTE_INPUT_RELAY)
+    input_relay.off()
 
     def __init__(self):
         def handler():
@@ -160,41 +162,37 @@ class NoteAcceptorRegister(Thread):
 
 class CoinAcceptorRegister(Thread):
     REGISTERING_INPUT = Lock()
-    coin_input_relay = OutputDevice(Pins.COIN_INPUT_RELAY)
-    coin_input_relay.on()
+    input_relay = OutputDevice(Pins.COIN_INPUT_RELAY)
+    input_relay.off()
+    is_open = False
 
     def __init__(self):
         def handler():
-            input_pin = Button(Pins.COIN_ACCEPTOR_PULSE_INPUT)
-            while True:
-                input_pin.wait_for_press()
-                sleep(0.01)
-                if input_pin.active_time or 0 < 0.01:
-                    continue
-                else:
+            input_pin = Button(Pins.COIN_ACCEPTOR_PULSE_INPUT, hold_time=0.025)
+
+            def when_held_handler():
+                aq = False
+                if self.is_open:
+                    aq = True
                     CashController.cash_input_sem.acquire()
-                    with self.REGISTERING_INPUT:
-                        self.close()
-                        with CashState.BALANCE_LOCK:
-                            CashState.balance += 10
-                        while True:
-                            res = input_pin.wait_for_press(timeout=0.110)
-                            print(res)
-                            if res:
-                                with CashState.BALANCE_LOCK:
-                                    CashState.balance += 10
-                                continue
-                            break
-                        self.open()
+                    self.close()
+                with CashState.BALANCE_LOCK:
+                    CashState.balance += 10
+                if aq and not input_pin.wait_for_active(timeout=0.2):
                     CashController.cash_input_sem.release()
+                    self.open()
+
+            input_pin.when_held = when_held_handler
 
         super().__init__(target=handler)
 
     def open(self):
-        self.coin_input_relay.off()
+        self.input_relay.on()
+        self.is_open = False
 
     def close(self):
-        self.coin_input_relay.on()
+        self.input_relay.off()
+        self.is_open = True
 
 
 if __name__ == '__main__':
