@@ -1,6 +1,8 @@
+from changebox import ChangeBox
 import posix_ipc as ipc
+from enum import Enum
+from datetime import datetime
 from threading import Lock, Thread, Semaphore
-from time import sleep
 from gpiozero.pins.mock import MockFactory
 from gpiozero import Device, Button, OutputDevice
 from pins import Pins
@@ -12,11 +14,32 @@ if os.environ.get('TESTING_ENVIRONMENT', None):
     Device.pin_factory = MockFactory()
 
 
+class Status(Enum):
+    ACCEPTING_CASH = 1
+    DENYING_CASH = 2
+    PAYMENT_READY = 4
+
+
 class CashState:
-    BALANCE_LOCK = Lock()
-    balance = 0
-    required_amount = 0
-    accept_cash = False
+    def __init__(self):
+        self.BALANCE_LOCK = Lock()
+        self._balance = 0
+        self.required_amount = 0
+        self.status: Status = Status.DENYING_CASH
+
+    @property
+    def balance(self):
+        return self._balance
+
+    @balance.setter
+    def balance(self, balance):
+        self._balance = balance
+
+
+class CollectorPosition(Enum):
+    DROP = "DROP"
+    TAKE = "TAK E"
+    COLLECT = "COLLECT"
 
 
 class CashController(Thread):
@@ -24,8 +47,12 @@ class CashController(Thread):
     cmd_mq = ipc.MessageQueue(MessageQueueNames.CLIENT_CONTROLLER_REQUESTS.value, ipc.O_CREAT)
     _instance = None
     cash_input_sem = Semaphore(value=4)
+    cash_state = CashState()
 
     def __init__(self):
+        self.change_box = ChangeBox()
+        self.last_reported_amount = None
+        self.last_command = None
         if CashController._instance:
             raise RuntimeError
         else:
@@ -34,171 +61,213 @@ class CashController(Thread):
         self.note_register = NoteAcceptorRegister()
         self.coin_register = CoinAcceptorRegister()
 
-        def handler():
-            while True:
-                cmd, prio = CashController.cmd_mq.receive(timeout=0.1 if CashState.accept_cash else None)
-                if cmd:
-                    if cmd.startswith(CashRegisterCommand.ACCEPT_CASH):
-                        self.accept_cash(amount=int(cmd.split(', ')[1]))
-                        CashController.cash_mq.send(CashRegisterStatus.ACCEPTING_CASH)
-                    if cmd.startswith(CashRegisterCommand.DENY_CASH):
-                        self.cancel_cash()
-                        CashController.cash_mq.send(CashRegisterStatus.DENYING_CASH)
-                    if cmd.startswith(CashRegisterCommand.TAKE_MONEY):
-                        self.take_money()
-                        CashController.cash_mq.send(CashRegisterStatus.PAYMENT_COLLECTED)
-                    else:
-                        raise RuntimeError(f"Undefined Command {cmd}!")
-                else:
-                    with CashState.BALANCE_LOCK:
-                        if CashState.balance >= CashState.required_amount:
-                            self.deny_cash()
-                    CashController.cash_mq.send(CashRegisterStatus.PAYMENT_READY)
+        super().__init__(target=self.handler)
 
-        super().__init__(target=handler)
+    def not_registering(self):
+        with self.coin_register.last_pulse_l, self.note_register.last_pulse_l:
+            return (
+                    (
+                            not self.coin_register.last_pulse or
+                            (datetime.now() - self.coin_register.last_pulse).seconds >= 1
+                    )
+                    and (
+                            not self.note_register.last_pulse or
+                            (datetime.now() - self.note_register.last_pulse).seconds >= 2
+                    )
+            )
 
-    def accept_cash(self, amount):
-        # Setup hardware to accept Cash:
-        # Open Coin Acceptor SET and close Note Acceptor Inhibit Circuit
-        with CashState.BALANCE_LOCK:
-            CashState.accept_cash = True
-            CashState.required_amount = amount
+    def handler(self):
+        while True:
+
+            functions = {
+                CashRegisterCommand.ACCEPT_CASH:
+                    self.enable_cash if self.cash_state.status == Status.DENYING_CASH else
+                    self.update_payment_status if self.cash_state.status == Status.ACCEPTING_CASH else None,
+                CashRegisterCommand.DENY_CASH:
+                    self.cancel_cash if self.cash_state.status == Status.ACCEPTING_CASH else
+                    self.cancel_cash if self.cash_state.status == Status.PAYMENT_READY else None,
+                CashRegisterCommand.TAKE_MONEY:
+                    self.collect_payment if self.cash_state.status == Status.PAYMENT_READY else None,
+            }
+
+            try:
+                cmd, _ = CashController.cmd_mq.receive(timeout=1 if self.last_command else None)
+                cmd = cmd.decode("utf-8")
+                command = (
+                    CashRegisterCommand.ACCEPT_CASH if cmd.startswith(CashRegisterCommand.ACCEPT_CASH.value)
+                    else CashRegisterCommand.DENY_CASH if cmd.startswith(CashRegisterCommand.DENY_CASH.value) else
+                    CashRegisterCommand.TAKE_MONEY if cmd.startswith(CashRegisterCommand.TAKE_MONEY.value) else None
+                )
+                if command:
+                    fun = functions[command]
+                    if fun:
+                        if fun(command=cmd):
+                            self.last_command = None
+                        else:
+                            self.last_command = (command, cmd)
+
+            except ipc.BusyError as e:
+                if self.last_command:
+                    fun = functions[self.last_command[0]]
+                    if fun(command=None):
+                        self.last_command = None
+
+    # Payment Ready, Command Take Money
+    def collect_payment(self, command=None):
+        self.set_collector(CollectorPosition.TAKE)
+
+        assert not self.coin_register.is_open
+        assert not self.note_register.is_open
+
+        if self.not_registering():
+            with self.cash_state.BALANCE_LOCK:
+                if self.cash_state.required_amount < self.cash_state.balance:
+                    self.change_box.give_change(self.cash_state.balance - self.cash_state.required_amount)
+
+            self.reset_cash_state()
+            self.cash_mq.send(CashRegisterStatus.PAYMENT_COLLECTED.value)
+            return True
+        return False
+
+    def set_collector(self, position):
+        pass
+
+    # Payment Ready, Command deny Cash
+    def drop_payment(self, command=None):
+        if self.coin_register.is_open or self.note_register.is_open:
+            raise RuntimeError()
+
+        self.set_collector(CollectorPosition.DROP)
+        self.reset_cash_state()
+
+        self.cash_mq.send(CashRegisterStatus.PAYMENT_DROPPED.value)
+
+        return True
+
+    def reset_cash_state(self):
+        with self.cash_state.BALANCE_LOCK:
+            self.cash_state.balance = 0
+            self.cash_state.required_amount = 0
+            self.cash_state.status = Status.DENYING_CASH
+            self.last_reported_amount = 0
+        return True
+
+    # Denying Cash, Command accept cash
+    def enable_cash(self, command=None):
+        assert not self.coin_register.is_open
+        assert not self.note_register.is_open
+        assert self.cash_state.status == Status.DENYING_CASH
+
+        if self.not_registering():
+            with self.cash_state.BALANCE_LOCK:
+                required_amount = int(command.split(' ')[1])
+                self.cash_state.required_amount = required_amount
+                self.set_collector(CollectorPosition.COLLECT)
+                self.open_cash_inputs()
+                self.cash_mq.send(CashRegisterStatus.ACCEPTING_CASH.value)
+                self.last_reported_amount = 0
+                self.cash_state.status = Status.ACCEPTING_CASH
+
+    def close_cash_inputs(self):
+        self.note_register.close()
+        self.coin_register.close()
+
+    def open_cash_inputs(self):
         self.note_register.open()
         self.coin_register.open()
 
-    def deny_cash(self):
-        CashState.accept_cash = False
-        na_lock_acquired = self.note_register.REGISTERING_INPUT.acquire(blocking=False)
-        if na_lock_acquired:
-            self.note_register.close()
-            self.note_register.REGISTERING_INPUT.release()
-        with self.coin_register.REGISTERING_INPUT:
-            self.coin_register.close()
-        if not na_lock_acquired:
-            with self.note_register.REGISTERING_INPUT:
-                self.note_register.close()
+    # Accepting Cash, Command deny Cash
+    def cancel_cash(self, command=None):
+        if self.cash_state.status == Status.PAYMENT_READY:
+            if self.not_registering():
+                self.drop_payment()
+            else:
+                return False
+        elif self.cash_state.status == Status.ACCEPTING_CASH:
+            if self.not_registering():
+                self.close_cash_inputs()
+                self.reset_cash_state()
+            else:
+                return False
+        elif self.cash_state.status == Status.DENYING_CASH:
+            return True
 
-    def cancel_cash(self):
-        # Setup hardware to deny Cash:
-        # 1. Close Coin Acceptor SET and open Note Acceptor Inhibit Circuit
-        self.deny_cash()
+        assert False
 
-        # 2. Give back money
-        if CashState.balance:
-            self.drop_money()
-
-    @staticmethod
-    def drop_money():
-        # Set collector switch to drop all the money that has been collected into the change box
-        with CashState.BALANCE_LOCK:
-            CashState.balance = 0
-
-    @staticmethod
-    def issue_change(amount):
-        # Give out Change
-        denominations = {200: 16, 100: 17, 50: 18, 20: 19, 10: 20}
-
-        if amount % 10:
-            raise RuntimeError
-        while amount:
-            for d in denominations:
-                if d <= amount:
-                    amount -= d
-                    pin = denominations[d]
-                    # do something with pin
-                    break
-
-    def take_money(self):
-        # 1. set switch to drop money into box
-
-        # reset balance
-        with CashState.BALANCE_LOCK:
-            CashState.balance = 0
-
-        # 2. Issue Change
-        with CashState.BALANCE_LOCK:
-            if CashState.required_amount < CashState.balance:
-                self.issue_change(CashState.balance - CashState.required_amount)
+    # Accepting Cash, no command, but waiting for full balance or cancel request
+    def update_payment_status(self, command=None):
+        with self.cash_state.BALANCE_LOCK:
+            if self.cash_state.balance >= self.cash_state.required_amount:
+                if self.not_registering():
+                    self.close_cash_inputs()
+                    self.cash_state.status = Status.PAYMENT_READY
+                    self.last_reported_amount = self.cash_state.balance
+                    self.cash_mq.send(CashRegisterStatus.PAYMENT_READY.value)
+                    return True
+            else:
+                if not self.last_reported_amount or self.last_reported_amount < self.cash_state.balance:
+                    try:
+                        self.cash_mq.send(f'{Status.ACCEPTING_CASH.value} {self.cash_state.balance}', timeout=0)
+                    except ipc.BusyError:
+                        pass
+            return False
 
     def start_all(self):
         self.start(), self.note_register.start(), self.coin_register.start()
         return self.note_register, self.coin_register
 
 
-class NoteAcceptorRegister(Thread):
-    REGISTERING_INPUT = Lock()
-    input_relay = OutputDevice(Pins.NOTE_INPUT_RELAY)
-    input_relay.off()
-    is_open = False
+class CashRegister(Thread):
+    def __init__(self, pulse_clearance, input_relay, pulse_pin, balance_per_pulse):
+        self.pulse_clearance = pulse_clearance
+        self.input_relay = input_relay
+        self.pulse_pin: Button = pulse_pin
+        self.last_pulse_l: Lock = Lock()
+        self.last_pulse: datetime = None
+        self.balance_per_pulse: int = balance_per_pulse
 
-    def __init__(self):
-        def handler():
-            input_pin = Button(Pins.NOTE_ACCEPTOR_PULSE_INPUT, hold_time=0.045)
+        self.is_open = False
+        self.input_relay.off()
 
-            def when_held_handler():
-                aq = self.REGISTERING_INPUT.acquire(blocking=False)
-                if aq:
-                    CashController.cash_input_sem.acquire()
-                with CashState.BALANCE_LOCK:
-                    CashState.balance += 500
-                    print("CASH INPUT ", 500, "NEW BALANCE:", CashState.balance)
-                if aq:
-                    while True:
-                        if not input_pin.wait_for_active(timeout=0.11):
-                            CashController.cash_input_sem.release()
-                            return
+        super(CashRegister, self).__init__(target=self.handler)
 
-            input_pin.when_held = when_held_handler
+    def handler(self):
+        def when_held_handler():
+            with CashController.cash_state.BALANCE_LOCK:
+                CashController.cash_state.balance += self.balance_per_pulse
+                self.last_pulse = datetime.now()
 
-        super().__init__(target=handler)
+        self.pulse_pin.when_held = when_held_handler
 
     def open(self):
         self.input_relay.on()
         self.is_open = True
-        print("OPENED NOTE ACCEPTOR")
 
     def close(self):
         self.input_relay.off()
         self.is_open = False
-        print("CLOSED NOTE ACCEPTOR")
 
 
-class CoinAcceptorRegister(Thread):
-    REGISTERING_INPUT = Lock()
-    input_relay = OutputDevice(Pins.COIN_INPUT_RELAY)
-    input_relay.off()
-    is_open = False
+class CoinAcceptorRegister(CashRegister):
 
     def __init__(self):
-        def handler():
-            input_pin = Button(Pins.COIN_ACCEPTOR_PULSE_INPUT, hold_time=0.025)
+        super().__init__(
+            pulse_clearance=1.4,
+            input_relay=OutputDevice(Pins.COIN_INPUT_RELAY),
+            pulse_pin=Button(Pins.COIN_ACCEPTOR_PULSE_INPUT, hold_time=0.025),
+            balance_per_pulse=10,
+        )
 
-            def when_held_handler():
-                aq = self.REGISTERING_INPUT.acquire(blocking=False)
-                if aq:
-                    CashController.cash_input_sem.acquire()
-                with CashState.BALANCE_LOCK:
-                    CashState.balance += 10
-                    print("CASH INPUT ", 10, "NEW BALANCE:", CashState.balance)
-                if aq:
-                    while True:
-                        if not input_pin.wait_for_active(timeout=0.2):
-                            CashController.cash_input_sem.release()
-                            return
 
-            input_pin.when_held = when_held_handler
+class NoteAcceptorRegister(CashRegister):
 
-        super().__init__(target=handler)
-
-    def open(self):
-        self.input_relay.on()
-        self.is_open = True
-        print("OPENED COIN ACCEPTOR")
-
-    def close(self):
-        self.input_relay.off()
-        self.is_open = False
-        print("CLOSED COIN ACCEPTOR")
+    def __init__(self):
+        super().__init__(
+            pulse_clearance=1.6,
+            input_relay=OutputDevice(Pins.NOTE_INPUT_RELAY),
+            pulse_pin=Button(Pins.NOTE_ACCEPTOR_PULSE_INPUT, hold_time=0.045),
+            balance_per_pulse=500,
+        )
 
 
 if __name__ == '__main__':
