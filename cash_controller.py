@@ -7,7 +7,7 @@ from gpiozero.pins.mock import MockFactory
 from gpiozero import Device, Button, OutputDevice
 from pins import Pins
 import os
-from client_constants import CashRegisterCommand, CashRegisterStatus, MessageQueueNames
+from client_constants import CashControllerCommand, CashControllerMessage, MessageQueueNames
 
 # Set the default pin factory to a mock factory
 if os.environ.get('TESTING_ENVIRONMENT', None):
@@ -43,8 +43,8 @@ class CollectorPosition(Enum):
 
 
 class CashController(Thread):
-    cash_mq = ipc.MessageQueue(MessageQueueNames.CLIENT_CONTROLLER_RESPONSES.value, ipc.O_CREAT)
-    cmd_mq = ipc.MessageQueue(MessageQueueNames.CLIENT_CONTROLLER_REQUESTS.value, ipc.O_CREAT)
+    cash_mq = ipc.MessageQueue(MessageQueueNames.CASH_CONTROLLER_MESSAGES.value, ipc.O_CREAT)
+    cmd_mq = ipc.MessageQueue(MessageQueueNames.CASH_CONTROLLER_COMMANDS.value, ipc.O_CREAT)
     _instance = None
     cash_input_sem = Semaphore(value=4)
     cash_state = CashState()
@@ -80,13 +80,13 @@ class CashController(Thread):
         while True:
 
             functions = {
-                CashRegisterCommand.ACCEPT_CASH:
+                CashControllerCommand.ACCEPT_CASH:
                     self.enable_cash if self.cash_state.status == Status.DENYING_CASH else
                     self.update_payment_status if self.cash_state.status == Status.ACCEPTING_CASH else None,
-                CashRegisterCommand.DENY_CASH:
+                CashControllerCommand.DENY_CASH:
                     self.cancel_cash if self.cash_state.status == Status.ACCEPTING_CASH else
                     self.cancel_cash if self.cash_state.status == Status.PAYMENT_READY else None,
-                CashRegisterCommand.TAKE_MONEY:
+                CashControllerCommand.TAKE_MONEY:
                     self.collect_payment if self.cash_state.status == Status.PAYMENT_READY else None,
             }
 
@@ -94,9 +94,9 @@ class CashController(Thread):
                 cmd, _ = CashController.cmd_mq.receive(timeout=1 if self.last_command else None)
                 cmd = cmd.decode("utf-8")
                 command = (
-                    CashRegisterCommand.ACCEPT_CASH if cmd.startswith(CashRegisterCommand.ACCEPT_CASH.value)
-                    else CashRegisterCommand.DENY_CASH if cmd.startswith(CashRegisterCommand.DENY_CASH.value) else
-                    CashRegisterCommand.TAKE_MONEY if cmd.startswith(CashRegisterCommand.TAKE_MONEY.value) else None
+                    CashControllerCommand.ACCEPT_CASH if cmd.startswith(CashControllerCommand.ACCEPT_CASH.value)
+                    else CashControllerCommand.DENY_CASH if cmd.startswith(CashControllerCommand.DENY_CASH.value) else
+                    CashControllerCommand.TAKE_MONEY if cmd.startswith(CashControllerCommand.TAKE_MONEY.value) else None
                 )
                 if command:
                     fun = functions[command]
@@ -125,7 +125,7 @@ class CashController(Thread):
                     self.change_box.give_change(self.cash_state.balance - self.cash_state.required_amount)
 
             self.reset_cash_state()
-            self.cash_mq.send(CashRegisterStatus.PAYMENT_COLLECTED.value)
+            self.cash_mq.send(CashControllerMessage.PAYMENT_COLLECTED.value)
             return True
         return False
 
@@ -140,7 +140,7 @@ class CashController(Thread):
         self.set_collector(CollectorPosition.DROP)
         self.reset_cash_state()
 
-        self.cash_mq.send(CashRegisterStatus.PAYMENT_DROPPED.value)
+        self.cash_mq.send(CashControllerMessage.PAYMENT_DROPPED.value)
 
         return True
 
@@ -164,7 +164,7 @@ class CashController(Thread):
                 self.cash_state.required_amount = required_amount
                 self.set_collector(CollectorPosition.COLLECT)
                 self.open_cash_inputs()
-                self.cash_mq.send(CashRegisterStatus.ACCEPTING_CASH.value)
+                self.cash_mq.send(CashControllerMessage.ACCEPTING_CASH.value)
                 self.last_reported_amount = 0
                 self.cash_state.status = Status.ACCEPTING_CASH
 
@@ -202,7 +202,7 @@ class CashController(Thread):
                     self.close_cash_inputs()
                     self.cash_state.status = Status.PAYMENT_READY
                     self.last_reported_amount = self.cash_state.balance
-                    self.cash_mq.send(CashRegisterStatus.PAYMENT_READY.value)
+                    self.cash_mq.send(CashControllerMessage.PAYMENT_READY.value)
                     return True
             else:
                 if not self.last_reported_amount or self.last_reported_amount < self.cash_state.balance:
