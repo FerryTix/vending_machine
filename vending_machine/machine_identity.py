@@ -6,22 +6,22 @@ from base64 import b64encode
 
 
 class MachineIdentity:
-    IDENTIFY_FILE = './identity.pem'
+    IDENTITY_FILE = './identity.pem'
     API_KEY_FILE = './api.key'
 
     def __init__(self):
-        if not (os.path.exists(MachineIdentity.IDENTIFY_FILE) and
-                os.path.isfile(MachineIdentity.IDENTIFY_FILE)):
+        if not (os.path.exists(MachineIdentity.IDENTITY_FILE) and
+                os.path.isfile(MachineIdentity.IDENTITY_FILE)):
             self._private_key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
 
-            with open(MachineIdentity.IDENTIFY_FILE, 'wb') as key_file:
+            with open(MachineIdentity.IDENTITY_FILE, 'wb') as key_file:
                 key_file.write(self._private_key.private_bytes(
                     encoding=serialization.Encoding.PEM,
                     format=serialization.PrivateFormat.TraditionalOpenSSL,
                     encryption_algorithm=serialization.NoEncryption(),
                 ))
         else:
-            with open(MachineIdentity.IDENTIFY_FILE, 'rb') as key_file:
+            with open(MachineIdentity.IDENTITY_FILE, 'rb') as key_file:
                 self._private_key = serialization.load_pem_private_key(
                     key_file.read(),
                     password=None,
@@ -48,3 +48,9 @@ class MachineIdentity:
             ),
             hashes.SHA3_512()
         ))
+
+    def get_public_key(self):
+        return self._private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.PKCS1
+        ).decode()
