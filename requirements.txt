@@ -1,9 +1,14 @@
 PyYAML
 cryptography >= 3.1
 mfrc522
+loguru
 gpiozero
 certifi >= 14.05.14
 six >= 1.10
 python_dateutil >= 2.5.3
 setuptools >= 21.0.0
 urllib3 >= 1.15.1
+swagger-client @ git+https://github.com/ferrytix/python_api_client.git
+frontend @ git+https://github.com/FerryTix/frontend.git
+receipt_generator @ git+https://github.com/FerryTix/receipt_generator.git
+
