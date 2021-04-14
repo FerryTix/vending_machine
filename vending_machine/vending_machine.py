@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("BASE_PATH", "../frontend/")
+
 from loguru import logger
 from controllers.client_controller import ClientController
 from controllers.client_context import ClientContext
