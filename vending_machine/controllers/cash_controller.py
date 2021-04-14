@@ -1,17 +1,41 @@
-from changebox import ChangeBox
+from .changebox import ChangeBox
 from enum import Enum
+from typing import Union
 from datetime import datetime
 from threading import Lock, Thread, RLock
 from gpiozero.pins.mock import MockFactory
 from gpiozero import Device, Button, OutputDevice
 from ..pins import Pins
 import os
-from client_constants import CashControllerCommand, CashControllerMessage
 from queue import Empty, Queue, Full
 
 # Set the default pin factory to a mock factory, if in testing environment
 if os.environ.get('TESTING_ENVIRONMENT', None):
     Device.pin_factory = MockFactory()
+
+
+class CashControllerCommand(Enum):
+    DENY_CASH = "DENY_CASH"
+    ACCEPT_CASH = "ACCEPT_CASH"
+    TAKE_MONEY = "TAKE_MONEY"
+
+
+class CashControllerMessage(Enum):
+    ACCEPTING_CASH = "ACCEPTING_CASH"
+    DENYING_CASH = "DENYING_CASH"
+    PAYMENT_READY = "PAYMENT_READY"
+    PAYMENT_COLLECTED = "PAYMENT_COLLECTED"
+    PAYMENT_DROPPED = "PAYMENT_DROPPED"
+
+
+class NFCControllerCommand(Enum):
+    START_READING = "START_READING"
+    STOP_READING = "STOP_READING"
+
+
+class NFCControllerMessage(Enum):
+    TAG_DETECTED = "TAG_DETECTED"
+    TAG_UNREADABLE = "TAG_UNREADABLE"
 
 
 class Status(Enum):
@@ -218,7 +242,7 @@ class CashRegister(Thread):
         self.input_relay = input_relay
         self.pulse_pin: Button = pulse_pin
         self.last_pulse_l: RLock = RLock()
-        self.last_pulse: datetime = None
+        self.last_pulse: Union[None, datetime] = None
         self.balance_per_pulse: int = balance_per_pulse
         self.controller = controller
 
