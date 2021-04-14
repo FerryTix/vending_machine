@@ -1,3 +1,4 @@
+from .client_context import ClientContext
 import os
 from queue import Queue
 from .cash_controller import CashController
@@ -11,7 +12,6 @@ from gpiozero.pins.mock import MockFactory
 from gpiozero import Device
 from time import sleep
 from threading import Thread
-from .client_context import ClientContext
 
 if os.environ.get('TESTING_ENVIRONMENT', None):
     Device.pin_factory = MockFactory()

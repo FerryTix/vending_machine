@@ -5,7 +5,7 @@ from datetime import datetime
 from threading import Lock, Thread, RLock
 from gpiozero.pins.mock import MockFactory
 from gpiozero import Device, Button, OutputDevice
-from ..pins import Pins
+from pins import Pins
 import os
 from queue import Empty, Queue, Full
 

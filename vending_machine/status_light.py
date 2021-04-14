@@ -1,4 +1,4 @@
-from .pins import Pins
+from vending_machine.pins import Pins
 from gpiozero import OutputDevice
 
 
