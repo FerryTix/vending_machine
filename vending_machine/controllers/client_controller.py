@@ -4,7 +4,7 @@ from .cash_controller import CashController
 from .nfc_controller import NFCTag, NFCController
 from .ec_card_controller import ECCardController
 from .api_controller import APIController
-from .frontend_controller import FrontendController
+from frontend import FrontendController
 from ..status_light import StatusLight
 from ..main_power_switch import MainPowerSwitch
 from gpiozero.pins.mock import MockFactory

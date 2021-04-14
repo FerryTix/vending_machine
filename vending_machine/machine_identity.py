@@ -3,11 +3,17 @@ from cryptography.hazmat.primitives import serialization, hashes
 import json
 import os
 from base64 import b64encode
+from enum import Enum
+from yaml import safe_load
 
 
 class MachineIdentity:
-    IDENTITY_FILE = './identity.pem'
-    API_KEY_FILE = './api.key'
+    IDENTITY_FILE = '../identity.pem'
+    MACHINE_CONFIG_FILE = '../machine.config.yaml'
+
+    class KEYS(Enum):
+        API_KEY = 'api_key'
+        UUID = 'uuid'
 
     def __init__(self):
         if not (os.path.exists(MachineIdentity.IDENTITY_FILE) and
@@ -27,13 +33,13 @@ class MachineIdentity:
                     password=None,
                 )
 
-        if os.path.exists(MachineIdentity.API_KEY_FILE) and os.path.isfile(MachineIdentity.API_KEY_FILE):
-            with open(MachineIdentity.API_KEY_FILE) as api_key_file:
-                self.api_key = api_key_file.read()
+        if os.path.exists(MachineIdentity.MACHINE_CONFIG_FILE) and os.path.isfile(MachineIdentity.MACHINE_CONFIG_FILE):
+            with open(MachineIdentity.MACHINE_CONFIG_FILE) as config_file:
+                root = safe_load(config_file)
+                self.api_key = root[self.KEYS.API_KEY.value]
+                self.uuid = root[self.KEYS.UUID.value]
         else:
-            raise RuntimeError("No API Key has been configured for this machine.\n'"
-                               "'Please add the api key in the specified file.",
-                               MachineIdentity.API_KEY_FILE)
+            raise RuntimeError("No configuration detected")
 
     def signed_data(self, data):
         data.update({'signature': self.sign(data)})
@@ -54,3 +60,9 @@ class MachineIdentity:
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.PKCS1
         ).decode()
+
+
+if __name__ == '__main__':
+    i = MachineIdentity()
+    with open('../public_key.pem', 'w') as f:
+        f.write(i.get_public_key())
