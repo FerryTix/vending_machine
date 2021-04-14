@@ -11,4 +11,3 @@ urllib3 >= 1.15.1
 swagger-client @ git+https://github.com/ferrytix/python_api_client.git
 frontend @ git+https://github.com/FerryTix/frontend.git
 receipt_generator @ git+https://github.com/FerryTix/receipt_generator.git
-
