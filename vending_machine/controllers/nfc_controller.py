@@ -3,14 +3,19 @@ from threading import Thread, RLock
 from gpiozero.pins.mock import MockFactory
 from gpiozero import Device
 import os
-from queue import Empty, Queue, Full
-from mfrc522 import SimpleMFRC522
+from queue import Queue
 from uuid import UUID
 from time import sleep
 
 # Set the default pin factory to a mock factory, if in testing environment
 if os.environ.get('TESTING_ENVIRONMENT', None):
     Device.pin_factory = MockFactory()
+
+
+    class SimpleMFRC522:
+        pass
+else:
+    from mfrc522 import SimpleMFRC522
 
 
 class NFCController(Thread):
